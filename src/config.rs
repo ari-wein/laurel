@@ -50,6 +50,8 @@ pub struct Transform {
     pub execve_argv: HashSet<ArrayOrString>,
     #[serde(default, rename = "execve-argv-limit-bytes")]
     pub execve_argv_limit_bytes: Option<usize>,
+    #[serde(default, rename = "enrichment-prefix")]
+    pub enrichment_prefix: Option<String>,
 }
 
 impl Default for Transform {
@@ -57,6 +59,7 @@ impl Default for Transform {
         Transform {
             execve_argv: execve_argv_default(),
             execve_argv_limit_bytes: None,
+            enrichment_prefix: None,
         }
     }
 }
@@ -349,6 +352,7 @@ impl Config {
             filter_null_keys: self.filter.filter_null_keys,
             filter_raw_lines: self.filter.filter_raw_lines.clone(),
             filter_first_per_process: !self.filter.keep_first_per_process,
+            enrichment_prefix: self.transform.enrichment_prefix.clone(),
         }
     }
 }

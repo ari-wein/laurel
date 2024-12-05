@@ -51,6 +51,8 @@ pub struct Settings {
     pub filter_null_keys: bool,
     pub filter_raw_lines: regex::bytes::RegexSet,
     pub filter_first_per_process: bool,
+
+    pub enrichment_prefix: Option<String>,
 }
 
 impl Default for Settings {
@@ -78,6 +80,7 @@ impl Default for Settings {
             filter_null_keys: false,
             filter_raw_lines: regex::bytes::RegexSet::empty(),
             filter_first_per_process: false,
+            enrichment_prefix: None,
         }
     }
 }
@@ -316,6 +319,17 @@ impl<'a, 'ev> Coalesce<'a, 'ev> {
         Ok(())
     }
 
+    // Change return type to Vec<u8> since we're working with byte slices
+    fn prefix_key(&self, key: &[u8]) -> Vec<u8> {
+        if let Some(prefix) = &self.settings.enrichment_prefix {
+            let mut result = prefix.as_bytes().to_vec();
+            result.extend_from_slice(key);
+            result
+        } else {
+            key.to_vec()
+        }
+    }
+
     /// Flush out events
     ///
     /// Called every EXPIRE_PERIOD ms and when Coalesce is destroyed.
@@ -365,7 +379,7 @@ impl<'a, 'ev> Coalesce<'a, 'ev> {
                 } else {
                     format!("unknown({d})")
                 };
-                rec.push((Key::NameTranslated(r.clone()), Value::from(translated)));
+                rec.push((Key::NameTranslated(NVec::from(&self.prefix_key(r)[..])), Value::from(translated)));
                 true
             }
             (Key::NameGID(r), Value::Number(Number::Dec(d))) => {
@@ -376,7 +390,7 @@ impl<'a, 'ev> Coalesce<'a, 'ev> {
                 } else {
                     format!("unknown({d})")
                 };
-                rec.push((Key::NameTranslated(r.clone()), Value::from(translated)));
+                rec.push((Key::NameTranslated(NVec::from(&self.prefix_key(r)[..])), Value::from(translated)));
                 true
             }
             _ => false,
@@ -498,8 +512,8 @@ impl<'a, 'ev> Coalesce<'a, 'ev> {
         container_info: &mut Option<Body>,
     ) {
         if let (true, (Some(arch), Some(syscall))) = (self.settings.translate_universal, arch_sys) {
-            rv.push((Key::Literal("ARCH"), Value::Literal(arch)));
-            rv.push((Key::Literal("SYSCALL"), Value::Literal(syscall)));
+            rv.push((Key::Name(NVec::from(&self.prefix_key(b"ARCH")[..])), Value::Literal(arch)));
+            rv.push((Key::Name(NVec::from(&self.prefix_key(b"SYSCALL")[..])), Value::Literal(syscall)));
         }
 
         if let (true, Some(parent)) = (self.settings.enrich_pid, &parent) {
@@ -509,7 +523,7 @@ impl<'a, 'ev> Coalesce<'a, 'ev> {
         #[cfg(all(feature = "procfs", target_os = "linux"))]
         if let (true, Some(script)) = (self.settings.enrich_script, &script) {
             rv.push((
-                Key::Literal("SCRIPT"),
+                Key::Name(NVec::from(&self.prefix_key(b"SCRIPT")[..])),
                 Value::Str(script.as_slice(), Quote::None),
             ));
         }
@@ -525,7 +539,10 @@ impl<'a, 'ev> Coalesce<'a, 'ev> {
                     .iter()
                     .map(|l| Value::Str(l, Quote::None))
                     .collect::<Vec<_>>();
-                rv.push((Key::Literal("LABELS"), Value::List(labels)));
+                rv.push((
+                    Key::Name(NVec::from(&self.prefix_key(b"LABELS")[..])),
+                    Value::List(labels)
+                ));
             }
 
             #[cfg(all(feature = "procfs", target_os = "linux"))]
@@ -728,12 +745,12 @@ impl<'a, 'ev> Coalesce<'a, 'ev> {
             rv.push((Key::Literal("ARGV"), Value::List(argv)));
             rv.extend(nrv);
 
-            if let (Some(arch), Some(syscall)) = (arch, syscall) {
+            if let Some(arch) = arch {
                 if let Some(an) = ARCH_NAMES.get(&arch) {
                     arch_name = Some(*an);
                     if let Some(sn) = SYSCALL_NAMES
                         .get(*an)
-                        .and_then(|syscall_tbl| syscall_tbl.get(&syscall))
+                        .and_then(|syscall_tbl| syscall_tbl.get(&syscall.unwrap()))
                     {
                         syscall_name = Some(sn);
 

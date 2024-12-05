@@ -108,6 +108,9 @@ configuration items work just like for the audit log.
 - `execve-argv`: The list of `EXECVE.a*` fields are transformed to an
   `ARGV` list or `ARGV_STR` string. Set to `array`, `string` (or
   both). Default: `array`
+- `enrichment-prefix`: A string prefix to add to all enriched field names. 
+  For example, setting this to "L_" will rename enriched fields like "GID" 
+  to "L_GID". Default: unset
 - `execve-argv-limit-bytes`: Arguments are cut out of the middle long
    argument lists in `EXECVE.ARGV` or `EXECVE.ARGV_STR` so that this
    limit is not exceeded. Default: unset
