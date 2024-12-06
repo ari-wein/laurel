@@ -266,33 +266,66 @@ fn path_script_name(path: &Body, pid: u32, ppid: u32, cwd: &[u8], exe: &[u8]) ->
 }
 
 /// Create an enriched pid entry in rv.
-fn add_record_procinfo(rec: &mut Body, key: &[u8], proc: &Process, include_names: bool) {
-    let mut m: Vec<(Key, Value)> = Vec::with_capacity(4);
-    match &proc.key {
-        ProcessKey::Event(id) => {
-            m.push(("EVENT_ID".into(), format!("{id}").into()));
-        }
-        ProcessKey::Observed { time, pid: _ } => {
-            let (sec, msec) = (time / 1000, time % 1000);
-            m.push(("START_TIME".into(), format!("{sec}.{msec:03}").into()));
-        }
-    }
-    if include_names {
-        if let Some(comm) = &proc.comm {
-            m.push(("comm".into(), Value::from(comm.as_slice())));
-        }
-        if let Some(exe) = &proc.exe {
-            m.push(("exe".into(), Value::from(exe.as_slice())));
-        }
-        if proc.ppid != 0 {
-            m.push(("ppid".into(), Value::from(proc.ppid as i64)));
-        }
-    }
-
-    rec.push((Key::NameTranslated(key.into()), Value::Map(m)));
-}
-
 impl<'a, 'ev> Coalesce<'a, 'ev> {
+    fn add_record_procinfo(&mut self, rec: &mut Body, key: &[u8], proc: &Process, include_names: bool) {
+        let mut m: Vec<(Key, Value)> = Vec::with_capacity(4);
+        match &proc.key {
+            ProcessKey::Event(id) => {
+                m.push(("EVENT_ID".into(), format!("{id}").into()));
+            }
+            ProcessKey::Observed { time, pid: _ } => {
+                let (sec, msec) = (time / 1000, time % 1000);
+                m.push(("START_TIME".into(), format!("{sec}.{msec:03}").into()));
+            }
+        }
+        if include_names {
+            if let Some(comm) = &proc.comm {
+                m.push(("comm".into(), Value::from(comm.as_slice())));
+            }
+            if let Some(exe) = &proc.exe {
+                m.push(("exe".into(), Value::from(exe.as_slice())));
+            }
+            if proc.ppid != 0 {
+                m.push(("ppid".into(), Value::from(proc.ppid as i64)));
+            }
+        }
+
+        rec.push((
+            Key::NameTranslated(NVec::from(&self.prefix_key(key)[..])),
+            Value::Map(m)
+        ));
+    }
+
+    /// Create an enriched pid entry in rv.
+    // fn add_record_procinfo(&mut self, rec: &mut Body, key: &[u8], proc: &Process, include_names: bool) {
+    //     let mut m: Vec<(Key, Value)> = Vec::with_capacity(4);
+    //     match &proc.key {
+    //         ProcessKey::Event(id) => {
+    //             m.push(("EVENT_ID".into(), format!("{id}").into()));
+    //         }
+    //         ProcessKey::Observed { time, pid: _ } => {
+    //             let (sec, msec) = (time / 1000, time % 1000);
+    //             m.push(("START_TIME".into(), format!("{sec}.{msec:03}").into()));
+    //         }
+    //     }
+    //     if include_names {
+    //         if let Some(comm) = &proc.comm {
+    //             m.push(("comm".into(), Value::from(comm.as_slice())));
+    //         }
+    //         if let Some(exe) = &proc.exe {
+    //             m.push(("exe".into(), Value::from(exe.as_slice())));
+    //         }
+    //         if proc.ppid != 0 {
+    //             m.push(("ppid".into(), Value::from(proc.ppid as i64)));
+    //         }
+    //     }
+
+    //     rec.push((
+    //         Key::NameTranslated(NVec::from(&self.prefix_key(key)[..])), 
+    //         Value::Map(m)
+    //     ));
+    // }
+
     /// Creates a `Coalsesce`. `emit_fn` is the function that takes
     /// completed events.
     pub fn new<F: 'a + FnMut(&Event<'ev>)>(emit_fn: F) -> Self {
@@ -329,9 +362,6 @@ impl<'a, 'ev> Coalesce<'a, 'ev> {
             key.to_vec()
         }
     }
-
-    /// Flush out events
-    ///
     /// Called every EXPIRE_PERIOD ms and when Coalesce is destroyed.
     fn expire_inflight(&mut self, now: u64) {
         let node_ids = self
@@ -426,8 +456,10 @@ impl<'a, 'ev> Coalesce<'a, 'ev> {
             _ => return,
         };
         if let Value::Number(Number::Dec(pid)) = v {
-            if let Some(proc) = self.processes.get_or_retrieve(*pid as _) {
-                add_record_procinfo(rv, name, proc, true)
+            // Get the process info before calling add_record_procinfo to avoid multiple mutable borrows
+            let proc = self.processes.get_or_retrieve(*pid as _).cloned();
+            if let Some(proc) = proc {
+                self.add_record_procinfo(rv, name, &proc, true);
             }
         }
     }
@@ -517,7 +549,7 @@ impl<'a, 'ev> Coalesce<'a, 'ev> {
         }
 
         if let (true, Some(parent)) = (self.settings.enrich_pid, &parent) {
-            add_record_procinfo(rv, b"ppid", parent, true);
+            self.add_record_procinfo(rv, b"ppid", parent, true);
         }
 
         #[cfg(all(feature = "procfs", target_os = "linux"))]
@@ -530,7 +562,7 @@ impl<'a, 'ev> Coalesce<'a, 'ev> {
 
         if let Some(proc) = &current_process {
             if self.settings.enrich_pid {
-                add_record_procinfo(rv, b"pid", proc, false);
+                self.add_record_procinfo(rv, b"pid", proc, false);
             }
 
             if !proc.labels.is_empty() {
@@ -1138,6 +1170,7 @@ mod test {
     #[test]
     fn coalesce() -> Result<(), Box<dyn Error>> {
         let ec: Rc<RefCell<Vec<Event>>> = Rc::new(RefCell::new(Vec::new()));
+
         let mut c = Coalesce::new(mk_emit_vec(&ec));
 
         process_record(&mut c, include_bytes!("testdata/line-user-acct.txt"))?;
